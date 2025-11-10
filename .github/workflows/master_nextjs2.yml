@@ -1,8 +1,9 @@
-name: Build & Deploy Next.js - nextjs2
+name: Build and deploy Next.js app to Azure Web App - nextjs2
 
 on:
   push:
-    branches: [master]
+    branches:
+      - master
   workflow_dispatch:
 
 jobs:
@@ -16,10 +17,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v3
         with:
           node-version: '20.x'
-          cache: 'npm'
 
       - name: Install dependencies and build
         run: |
@@ -28,15 +28,14 @@ jobs:
 
       - name: Prepare artifact
         run: |
-          mkdir -p artifact
-          cp -R .next public package.json artifact/
+          mkdir -p deploy
+          cp -R .next package.json public deploy/
       
-      - name: Upload build artifact
+      - name: Upload artifact for deployment
         uses: actions/upload-artifact@v4
         with:
-          name: nextjs-app
-          path: artifact/*
-          retention-days: 1
+          name: nextjs-build
+          path: deploy/*   # flatten the contents
 
   deploy:
     runs-on: ubuntu-latest
@@ -44,14 +43,13 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    environment: production
 
     steps:
       - name: Download build artifact to root
         uses: actions/download-artifact@v4
         with:
-          name: nextjs-app
-          path: .   # flatten artifact
+          name: nextjs-build
+          path: .   # download directly to the root
 
       - name: Login to Azure
         uses: azure/login@v2
@@ -60,13 +58,9 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_1417BD02CA8B4BF3AA6ED4A822A5656B }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_1EC809818F8B48F3A664AA335BEC56C1 }}
 
-      - name: Install production dependencies on Azure
-        run: npm install --production
-        working-directory: .
-
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: nextjs2
-          slot-name: Production
-          package: .
+          app-name: 'nextjs2'
+          slot-name: 'Production'
+          package: .   # deploy all contents at root
