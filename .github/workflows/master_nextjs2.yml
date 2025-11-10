@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-and-package:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -21,35 +21,77 @@ jobs:
         with:
           node-version: '20.x'
 
-      - name: Install dependencies and build
+      - name: Install full dependencies (for build) 
         run: |
-          npm install
+          # If package-lock.json exists use ci for reproducible build, otherwise fallback to install
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build Next.js
+        run: |
           npm run build
 
-      - name: Prepare artifact
+      - name: Prepare production node_modules (remove dev deps, ensure production deps only)
         run: |
+          # Remove all node_modules to guarantee a clean production install
+          rm -rf node_modules
+          # If we have a lockfile, prefer CI for deterministic production install
+          if [ -f package-lock.json ]; then
+            npm ci --omit=dev
+          else
+            npm install --production
+          fi
+          # sanity: ensure next binary exists
+          ls -la node_modules/.bin || true
+
+      - name: Prepare deploy folder (includes .next and production node_modules)
+        run: |
+          rm -rf deploy
           mkdir -p deploy
-          cp -R .next package.json public deploy/
-      
-      - name: Upload artifact for deployment
+          # copy runtime files
+          cp -R .next package.json public node_modules deploy/
+          # include package-lock.json if present (helpful for future reproducibility)
+          if [ -f package-lock.json ]; then cp package-lock.json deploy/; fi
+          # create a zip containing everything needed to run
+          cd deploy
+          zip -r -q ../nextjs-deploy.zip .
+          cd ..
+
+      - name: Upload deployment zip artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nextjs-build
-          path: deploy/*   # flatten the contents
+          name: nextjs-deploy
+          path: nextjs-deploy.zip
 
   deploy:
     runs-on: ubuntu-latest
-    needs: build
+    needs: build-and-package
     permissions:
       id-token: write
       contents: read
 
     steps:
-      - name: Download build artifact to root
+      - name: Download deployment zip artifact
         uses: actions/download-artifact@v4
         with:
-          name: nextjs-build
-          path: .   # download directly to the root
+          name: nextjs-deploy
+          path: .   # will create ./nextjs-deploy/nextjs-deploy.zip
+
+      - name: Move zip to root
+        run: |
+          # move the zip out of the artifact folder into the runner root
+          ART_DIR=$(find . -maxdepth 2 -type d -name "nextjs-deploy" -print -quit || true)
+          if [ -f "./nextjs-deploy/nextjs-deploy.zip" ]; then
+            mv ./nextjs-deploy/nextjs-deploy.zip ./nextjs-deploy.zip
+          else
+            # fallback: find the zip anywhere
+            ZIPPATH=$(find . -type f -name "nextjs-deploy.zip" -print -quit)
+            if [ -n "$ZIPPATH" ]; then mv "$ZIPPATH" ./nextjs-deploy.zip; fi
+          fi
+          ls -la nextjs-deploy.zip
 
       - name: Login to Azure
         uses: azure/login@v2
@@ -58,9 +100,9 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_1417BD02CA8B4BF3AA6ED4A822A5656B }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_1EC809818F8B48F3A664AA335BEC56C1 }}
 
-      - name: Deploy to Azure Web App
+      - name: Deploy zip to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: 'nextjs2'
           slot-name: 'Production'
-          package: .   # deploy all contents at root
+          package: ./nextjs-deploy.zip
